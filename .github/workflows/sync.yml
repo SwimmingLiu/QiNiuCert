@@ -24,7 +24,7 @@ jobs:
         run: |
           cat > config.yaml << 'EOF'
           tencent:
-            secret_id: "${{ secrets.TENCENT_SECRET_ID }}"
+            secret_id: "${{ secrets.TENCENT_SECERT_ID }}"
             secret_key: "${{ secrets.TENCENT_SECRET_KEY }}"
             region: "ap-guangzhou"
           qiniu:
