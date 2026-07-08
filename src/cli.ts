@@ -131,7 +131,9 @@ export function main(): void {
   program.parse();
 }
 
-// Run if called directly
-if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
+// Run if called directly (works across platforms and symlinks)
+import { fileURLToPath } from "node:url";
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   main();
 }
+

@@ -84,12 +84,18 @@ export function loadConfig(configPath?: string): AppConfig {
   };
 
   const domainMappings: DomainMapping[] = (raw.domains || []).map(
-    (item: any) => ({
-      certDomain: item.cert_domain,
-      cdnDomains: item.cdn_domains || [],
-      excludeCdnDomains: item.exclude_cdn_domains || [],
-      autoMatch: item.auto_match !== false,
-    })
+    (item: any, i: number) => {
+      const certDomain = validateRequired(
+        item.cert_domain,
+        `domains[${i}].cert_domain`
+      );
+      return {
+        certDomain,
+        cdnDomains: item.cdn_domains || [],
+        excludeCdnDomains: item.exclude_cdn_domains || [],
+        autoMatch: item.auto_match !== false,
+      };
+    }
   );
 
   const syncRaw = raw.sync || {};

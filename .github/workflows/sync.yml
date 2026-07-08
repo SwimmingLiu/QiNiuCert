@@ -8,6 +8,8 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -19,6 +21,15 @@ jobs:
           cache: "pnpm"
 
       - run: pnpm install --frozen-lockfile
+
+      - name: Restore cert cache
+        uses: actions/cache/restore@v4
+        id: cert-cache-restore
+        with:
+          path: .cert_cache.json
+          key: cert-cache-${{ github.run_id }}
+          restore-keys: |
+            cert-cache-
 
       - name: Create config from secrets
         run: |
@@ -36,3 +47,10 @@ jobs:
 
       - name: Run sync
         run: npx tsx src/cli.ts sync
+
+      - name: Save cert cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .cert_cache.json
+          key: cert-cache-${{ github.run_id }}
