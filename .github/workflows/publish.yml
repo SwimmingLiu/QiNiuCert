@@ -3,25 +3,23 @@ name: Publish to npm
 on:
   push:
     tags:
-      - "v*"         # Trigger on version tags (e.g. v1.0.0)
-  workflow_dispatch:  # Manual trigger
+      - "v*"
+  workflow_dispatch:
 
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write   # Required for npm provenance
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
           cache: "pnpm"
 
@@ -29,19 +27,17 @@ jobs:
 
       - run: pnpm build
 
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
       - name: Publish to npm
         run: pnpm publish --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
-
-  release:
-    needs: build-and-publish
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -49,4 +45,4 @@ jobs:
           name: "v${{ github.ref_name }}"
           generate_release_notes: true
           files: |
-            dist/
+            dist/**/*
