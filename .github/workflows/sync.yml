@@ -1,0 +1,40 @@
+name: Sync SSL Certs
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # Daily at 3am UTC
+  workflow_dispatch:        # Manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Create config from secrets
+        run: |
+          cat > config.yaml << 'EOF'
+          tencent:
+            secret_id: "${{ secrets.TENCENT_SECRET_ID }}"
+            secret_key: "${{ secrets.TENCENT_SECRET_KEY }}"
+            region: "ap-guangzhou"
+          qiniu:
+            access_key: "${{ secrets.QINIU_ACCESS_KEY }}"
+            secret_key: "${{ secrets.QINIU_SECRET_KEY }}"
+          sync:
+            force_https: true
+          EOF
+
+      - name: Run sync
+        run: npx tsx src/cli.ts sync

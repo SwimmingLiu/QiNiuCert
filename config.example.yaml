@@ -1,0 +1,29 @@
+# 腾讯云 API 凭证
+tencent:
+  secret_id: "AKIDxxxxxxxx"
+  secret_key: "xxxxxxxx"
+  region: "ap-guangzhou"              # SSL 证书服务区域
+
+# 七牛云 API 凭证
+qiniu:
+  access_key: "xxxxxxxx"
+  secret_key: "xxxxxxxx"
+
+# 域名映射配置（可选）
+# - 不配置时：自动匹配（从七牛云获取所有域名，按证书域名匹配）
+# - 配置时：手动指定的映射优先，可覆盖或排除自动匹配结果
+domains:
+  # 方式一：手动指定映射
+  # - cert_domain: "example.com"        # 腾讯云证书的主域名/通用名称
+  #   cdn_domains:                       # 七牛云上绑定该证书的域名
+  #     - "cdn.example.com"
+  #     - "static.example.com"
+
+  # 方式二：自动匹配 + 排除某些域名
+  # - cert_domain: "*.example.com"      # 泛域名证书
+  #   exclude_cdn_domains:               # 排除不绑定的域名
+  #     - "test.example.com"
+
+# 同步选项
+sync:
+  force_https: true                   # 绑定证书后是否强制 HTTPS 跳转（默认: true）

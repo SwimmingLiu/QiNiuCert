@@ -1,0 +1,67 @@
+{
+  "name": "@swimmingliu/qiniucert",
+  "version": "1.0.0",
+  "description": "自动同步腾讯云 SSL 证书到七牛云 CDN —— Auto-sync Tencent Cloud SSL certs to Qiniu CDN",
+  "license": "Apache-2.0",
+  "author": "SwimmingLiu",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "qiniucert": "./bin/qiniucert.js"
+  },
+  "files": [
+    "dist/",
+    "bin/",
+    "README.md",
+    "LICENSE",
+    "config.example.yaml"
+  ],
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsup",
+    "start": "node dist/cli.js",
+    "check": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "commander": "^13.1.0",
+    "js-yaml": "^4.1.1",
+    "qiniu": "^7.15.2",
+    "tencentcloud-sdk-nodejs-ssl": "^4.1.239"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.0.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "ssl",
+    "certificate",
+    "tencent-cloud",
+    "qiniu",
+    "cdn",
+    "auto-sync",
+    "qiniucert"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SwimmingLiu/QiNiuCert.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SwimmingLiu/QiNiuCert/issues"
+  },
+  "homepage": "https://github.com/SwimmingLiu/QiNiuCert#readme",
+  "packageManager": "pnpm@10.4.1"
+}
