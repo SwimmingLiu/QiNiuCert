@@ -2,20 +2,25 @@ name: Sync SSL Certs
 
 on:
   schedule:
-    - cron: "0 3 * * *"   # Daily at 3am UTC
-  workflow_dispatch:        # Manual trigger
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qiniucert-automation
+  cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    env:
-      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: "pnpm"
@@ -23,8 +28,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Restore cert cache
-        uses: actions/cache/restore@v4
-        id: cert-cache-restore
+        uses: actions/cache/restore@v6
         with:
           path: .cert_cache.json
           key: cert-cache-${{ github.run_id }}
@@ -48,9 +52,12 @@ jobs:
       - name: Run sync
         run: npx tsx src/cli.ts sync
 
+      - name: Check certificate expiry
+        run: npx tsx src/cli.ts check-expiry --warn-days 7
+
       - name: Save cert cache
-        uses: actions/cache/save@v4
         if: always()
+        uses: actions/cache/save@v6
         with:
           path: .cert_cache.json
           key: cert-cache-${{ github.run_id }}

@@ -28,6 +28,15 @@ export interface SyncReport {
   errors: number;
 }
 
+export interface ExpiryCheckResult {
+  certDomain: string;
+  cdnDomain: string;
+  certId: string;
+  expiresAt: string;
+  daysLeft: number | null;
+  error?: boolean;
+}
+
 /**
  * Local cache to track uploaded cert fingerprints.
  * Stored as JSON: { [certDomain]: { fingerprint, certId } }
@@ -253,6 +262,63 @@ export class Syncer {
 
   getCache(): CertCache {
     return this.cache;
+  }
+
+  async checkExpiry(warnDays = 7): Promise<ExpiryCheckResult[]> {
+    const entries = this.cache.getAllEntries();
+    const qiniuDomains = await this.qiniu.listDomains();
+    const results: ExpiryCheckResult[] = [];
+
+    for (const [certDomain, { certId: cachedCertId }] of Object.entries(entries)) {
+      for (const qd of qiniuDomains) {
+        if (
+          qd.name !== certDomain &&
+          !(certDomain.startsWith("*.") && qd.name.endsWith(certDomain.slice(1)))
+        ) {
+          continue;
+        }
+
+        const certId = qd.certId || "";
+        const expiresAt = await this.qiniu.getCertNotAfter(certId);
+        const timestamp = expiresAt ? Date.parse(expiresAt) : NaN;
+        const daysLeft = Number.isNaN(timestamp)
+          ? null
+          : Math.floor((timestamp - Date.now()) / 86_400_000);
+        const result: ExpiryCheckResult = {
+          certDomain,
+          cdnDomain: qd.name,
+          certId,
+          expiresAt: expiresAt || "unknown",
+          daysLeft,
+        };
+
+        if (!certId) {
+          console.error(`Qiniu domain ${qd.name} has no certificate bound`);
+          result.error = true;
+        } else if (cachedCertId !== certId) {
+          console.error(
+            `Qiniu domain ${qd.name} is bound to a different certificate than the sync cache`
+          );
+          result.error = true;
+        } else if (daysLeft === null) {
+          console.error(`Cannot read the expiry of the Qiniu certificate for ${qd.name}`);
+          result.error = true;
+        } else if (daysLeft <= warnDays) {
+          console.error(
+            `Qiniu certificate for ${qd.name} expires ${expiresAt} (${daysLeft} days left)`
+          );
+          result.error = true;
+        } else {
+          console.log(`${qd.name}: ${daysLeft} days until certificate expiry`);
+        }
+        results.push(result);
+      }
+    }
+
+    if (results.length === 0 && Object.keys(entries).length > 0) {
+      throw new Error("No Qiniu domains match the cached certificates");
+    }
+    return results;
   }
 
   private async syncOne(

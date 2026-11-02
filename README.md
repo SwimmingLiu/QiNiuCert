@@ -4,7 +4,7 @@
 
 [![npm version](https://img.shields.io/npm/v/@swimmingliu/qiniucert)](https://www.npmjs.com/package/@swimmingliu/qiniucert)
 
-腾讯云免费证书能自动续签，七牛云不认。这工具干一件事：把最新证书搬过去。
+腾讯云负责签发和续期证书，这工具负责把最新证书搬到七牛云。注意：免费 DV 证书需要在腾讯云控制台人工“快速续期”，并不支持自动续费。
 
 ## 安装
 
@@ -47,6 +47,7 @@ domains:
 qiniucert sync                # 增量同步，只更新变了证书
 qiniucert sync --dry-run      # 看看会干嘛，不动真格
 qiniucert sync --force        # 强制全量重传
+qiniucert check-expiry       # 七牛证书临期（默认 7 天）时退出非零
 qiniucert rebind              # 换了 forceHttps 设置后重绑
 qiniucert status              # 看缓存
 ```
@@ -57,10 +58,12 @@ qiniucert status              # 看缓存
 
 仓库里带了 GitHub Actions workflow（`.github/workflows/sync.yml`）。在仓库 Settings → Secrets 里加上：
 
-- `TENCENT_SECRET_ID` / `TENCENT_SECRET_KEY`
+- `TENCENT_SECERT_ID`（沿用现有名称）/ `TENCENT_SECRET_KEY`
 - `QINIU_ACCESS_KEY` / `QINIU_SECRET_KEY`
 
-就会每天凌晨 3 点（UTC）自动跑一次。手动触发也行。
+就会每天 UTC 03:23 自动同步，并检查七牛证书是否在 7 天内到期。同步或临期检查失败时，GitHub 会向启用失败通知的账号发邮件；请在 GitHub Settings → Notifications 里开启 Actions 通知。手动触发也行。
+
+公开仓库 60 天无活动会被 GitHub 停用定时任务。`.github/workflows/keepalive.yml` 每月 1 日和 15 日用 `GITHUB_TOKEN` 自动提交一次 `.github/keepalive`，防止停用。它不需要 PAT，只会向 `main` 提交保活时间；同日重复运行不会重复提交。它不能保证 Actions 永不故障，所以失败邮件通知仍然重要。
 
 用 cron 也一样：
 

@@ -24,6 +24,7 @@ const RETRY_DELAY_MS = 2000;
 export interface QiniuDomain {
   name: string;
   type: string;
+  certId?: string;
 }
 
 export class QiniuAPIError extends Error {
@@ -138,14 +139,29 @@ export class QiniuCDNClient {
   async listDomains(): Promise<QiniuDomain[]> {
     const resp = await this.retryRequest("GET", "/domain");
     const rawDomains = resp.domains || [];
-    return rawDomains.map((d: any) => ({
-      name: d.name || "",
-      type: d.type || "normal",
-    }));
+    const domains = await Promise.all(
+      rawDomains.map(async (d: any) => {
+        const detail = await this.getDomain(d.name || "");
+        return {
+          name: d.name || "",
+          type: d.type || "normal",
+          certId: (detail.https as any)?.certId || "",
+        };
+      })
+    );
+    return domains;
   }
 
   async getDomain(name: string): Promise<Record<string, unknown>> {
     return this.retryRequest("GET", `/domain/${name}`);
+  }
+
+  async getCertNotAfter(certId: string): Promise<string | undefined> {
+    if (!certId) return undefined;
+    const resp = await this.retryRequest("GET", `/sslcert/${certId}`);
+    const cert = resp.cert || resp;
+    if (typeof cert.not_after !== "number") return undefined;
+    return new Date(cert.not_after * 1000).toISOString();
   }
 
   async createSSLCert(

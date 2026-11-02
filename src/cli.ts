@@ -6,6 +6,7 @@
  *   qiniucert sync              Incremental sync
  *   qiniucert sync --force      Force re-upload all
  *   qiniucert sync --dry-run    Preview
+ *   qiniucert check-expiry     Check expiry of certificates bound in Qiniu
  *   qiniucert status            Show cache
  *   qiniucert rebind            Re-bind all cached certs to domains
  */
@@ -95,6 +96,31 @@ program
     );
 
     if (report.errors > 0) process.exit(1);
+  });
+
+program
+  .command("check-expiry")
+  .description("Fail when a cached Qiniu certificate is near expiry")
+  .option(
+    "-c, --config <path>",
+    "Path to config.yaml",
+    process.env.QINIUCERT_CONFIG || "config.yaml"
+  )
+  .option("--warn-days <days>", "Warn this many days before expiry", "7")
+  .action(async (opts) => {
+    try {
+      const warnDays = Number(opts.warnDays);
+      if (!Number.isInteger(warnDays) || warnDays < 0) {
+        throw new ConfigError("--warn-days must be a non-negative integer");
+      }
+      const config = loadConfig(opts.config);
+      const results = await new Syncer(config).checkExpiry(warnDays);
+      console.log(JSON.stringify(results, null, 2));
+      if (results.some((result) => result.error)) process.exitCode = 1;
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : err}`);
+      process.exitCode = 1;
+    }
   });
 
 program
