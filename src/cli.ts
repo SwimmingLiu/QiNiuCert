@@ -7,6 +7,7 @@
  *   qiniucert sync --force      Force re-upload all
  *   qiniucert sync --dry-run    Preview
  *   qiniucert check-expiry     Check expiry of certificates bound in Qiniu
+ *   qiniucert verify            Verify every Qiniu domain has a valid cert
  *   qiniucert status            Show cache
  *   qiniucert rebind            Re-bind all cached certs to domains
  */
@@ -124,6 +125,56 @@ program
   });
 
 program
+  .command("verify")
+  .description("Verify every Qiniu CDN domain is bound to a valid, unexpired cert")
+  .option(
+    "-c, --config <path>",
+    "Path to config.yaml",
+    process.env.QINIUCERT_CONFIG || "config.yaml"
+  )
+  .option("--min-days <days>", "Require at least this many days before expiry", "7")
+  .option("--check-reachability", "Also fail when a domain does not serve HTTPS")
+  .option(
+    "--fail-on-unmatched",
+    "Also fail when a Qiniu domain has no matching Tencent Cloud cert"
+  )
+  .action(async (opts) => {
+    try {
+      const minDays = Number(opts.minDays);
+      if (!Number.isInteger(minDays) || minDays < 0) {
+        throw new ConfigError("--min-days must be a non-negative integer");
+      }
+      const config = loadConfig(opts.config);
+      const results = await new Syncer(config).verify(minDays, {
+        checkReachability: Boolean(opts.checkReachability),
+      });
+      console.log(JSON.stringify(results, null, 2));
+
+      // `unmatched` means sync had nothing to bind (no Tencent cert covers
+      // the domain). Surface it loudly but only fail on request: the domain
+      // may have been added before its certificate.
+      const failing = results.filter((r) => {
+        if (r.status === "ok") return false;
+        if (r.status === "unmatched") return Boolean(opts.failOnUnmatched);
+        return true;
+      });
+      for (const r of results) {
+        if (r.status === "unmatched") console.warn(`! ${r.cdnDomain}: ${r.message}`);
+      }
+      for (const r of failing) {
+        if (r.status !== "unmatched") console.error(`✗ ${r.cdnDomain}: ${r.message}`);
+      }
+      console.log(
+        `\n${results.length - failing.length}/${results.length} Qiniu domains verified`
+      );
+      if (failing.length > 0) process.exitCode = 1;
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : err}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
   .command("status")
   .description("Show cache status")
   .option("--cache-file <path>", "Path to cache file", ".cert_cache.json")
@@ -149,6 +200,13 @@ program
       console.log(`  ${domain}:`);
       console.log(`    Qiniu CertID: ${info.certId}`);
       console.log(`    Fingerprint:  ${info.fingerprint}`);
+      const bindings = Object.entries(info.bindings ?? {});
+      if (bindings.length > 0) {
+        console.log(`    Bound domains:`);
+        for (const [cdnDomain, certId] of bindings) {
+          console.log(`      ${cdnDomain} → ${certId}`);
+        }
+      }
       console.log();
     }
   });

@@ -17,5 +17,15 @@ export { QiniuCDNClient, QiniuAPIError, type QiniuDomain } from "./qiniu.js";
 export {
   matchCertToDomains,
   buildAllMatches,
+  certCoversDomain,
+  domainMatchesPatterns,
 } from "./matcher.js";
-export { Syncer, CertCache, type SyncResult, type SyncReport } from "./syncer.js";
+export {
+  Syncer,
+  CertCache,
+  type SyncResult,
+  type SyncReport,
+  type CertCacheEntry,
+  type ExpiryCheckResult,
+  type VerifyResult,
+} from "./syncer.js";

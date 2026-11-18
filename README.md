@@ -33,6 +33,8 @@ sync:
 
 域名映射不用配，工具会自动从七牛云拉域名列表，按证书域名自动匹配。泛域名 `*.example.com` 能匹配到 `cdn.example.com` 这类子域名。
 
+**新增域名不用改任何配置**：每次运行都会重新拉取七牛云域名列表。只要腾讯云上有一张覆盖新域名的证书（主域名或 SAN），新域名就会在下次同步时自动上传/复用证书并绑定 HTTPS。定时任务每天跑一次，等于加完域名最迟一天后自动生效。
+
 想手动控制哪些域名绑哪些证书，可以加上 `domains` 字段：
 
 ```yaml
@@ -44,15 +46,19 @@ domains:
 ## 使用
 
 ```bash
-qiniucert sync                # 增量同步，只更新变了证书
+qiniucert sync                # 增量同步，只更新变了证书或还没绑定的域名
 qiniucert sync --dry-run      # 看看会干嘛，不动真格
 qiniucert sync --force        # 强制全量重传
+qiniucert verify              # 校验七牛云每个域名的证书有效、未过期
+qiniucert verify --check-reachability   # 同时验证 HTTPS 能正常握手
 qiniucert check-expiry       # 七牛证书临期（默认 7 天）时退出非零
 qiniucert rebind              # 换了 forceHttps 设置后重绑
 qiniucert status              # 看缓存
 ```
 
-每次同步会把证书 SHA1 指纹记在 `.cert_cache.json` 里。下次跑的时候指纹没变就跳过。
+每次同步会把证书 SHA1 指纹按证书域名记在 `.cert_cache.json` 里，同时记录每张证书绑过哪些七牛域名。指纹没变、且该域名已绑过就跳过；指纹没变但出现了新域名，则复用七牛上已有的证书 ID 直接绑定，不会重复上传证书。
+
+`verify` 不走缓存，直接对比腾讯云当前证书和七牛域名上实际绑定的证书内容，并检查到期时间。新加的域名如果没匹配到证书会以 `unmatched` 报出来，加 `--fail-on-unmatched` 可让它退出非零。
 
 ## 定时跑
 
@@ -61,14 +67,16 @@ qiniucert status              # 看缓存
 - `TENCENT_SECERT_ID`（沿用现有名称）/ `TENCENT_SECRET_KEY`
 - `QINIU_ACCESS_KEY` / `QINIU_SECRET_KEY`
 
-就会每天 UTC 03:23 自动同步，并检查七牛证书是否在 7 天内到期。同步或临期检查失败时，GitHub 会向启用失败通知的账号发邮件；请在 GitHub Settings → Notifications 里开启 Actions 通知。手动触发也行。
+就会每天 UTC 03:23 自动同步，并检查七牛证书是否在 7 天内到期。同步后会跑 `verify --check-reachability --fail-on-unmatched`：任何域名没绑证书、证书内容不是腾讯云当前那张、剩余有效期不足 7 天、或 HTTPS 握手失败，都会让任务失败并发通知。同步或临期检查失败时，GitHub 会向启用失败通知的账号发邮件；请在 GitHub Settings → Notifications 里开启 Actions 通知。手动触发也行。
+
+`.github/workflows/ci.yml` 在每次 push 和 PR 上跑类型检查、单元测试和构建。
 
 公开仓库 60 天无活动会被 GitHub 停用定时任务。`.github/workflows/keepalive.yml` 每月 1 日和 15 日用 `GITHUB_TOKEN` 自动提交一次 `.github/keepalive`，防止停用。它不需要 PAT，只会向 `main` 提交保活时间；同日重复运行不会重复提交。它不能保证 Actions 永不故障，所以失败邮件通知仍然重要。
 
 用 cron 也一样：
 
 ```bash
-0 3 * * * cd /path/to/project && qiniucert sync >> sync.log 2>&1
+0 3 * * * cd /path/to/project && qiniucert sync && qiniucert verify >> sync.log 2>&1
 ```
 
 ## License

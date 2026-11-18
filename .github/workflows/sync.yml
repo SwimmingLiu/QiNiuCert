@@ -47,13 +47,24 @@ jobs:
             secret_key: "${{ secrets.QINIU_SECRET_KEY }}"
           sync:
             force_https: true
+            cache_file: ".cert_cache.json"
           EOF
 
       - name: Run sync
+        id: sync
         run: npx tsx src/cli.ts sync
 
       - name: Check certificate expiry
+        if: always()
         run: npx tsx src/cli.ts check-expiry --warn-days 7
+
+      # Independent of the cache and of whether sync succeeded: reads the
+      # certificate each Qiniu domain actually serves and compares it with the
+      # current Tencent Cloud certificate. A domain added on Qiniu (or a sync
+      # that silently missed one) fails the job here.
+      - name: Verify every Qiniu domain is bound and serving HTTPS
+        if: always()
+        run: npx tsx src/cli.ts verify --min-days 7 --check-reachability --fail-on-unmatched
 
       - name: Save cert cache
         if: always()
