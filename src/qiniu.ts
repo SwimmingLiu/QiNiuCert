@@ -28,9 +28,12 @@ export interface QiniuDomain {
 }
 
 export class QiniuAPIError extends Error {
-  constructor(message: string) {
+  statusCode: number;
+
+  constructor(message: string, statusCode = 0) {
     super(message);
     this.name = "QiniuAPIError";
+    this.statusCode = statusCode;
   }
 }
 
@@ -69,6 +72,7 @@ export class QiniuCDNClient {
       method,
       headers,
       body: bodyStr,
+      signal: AbortSignal.timeout(30_000),
     });
 
     const data = (await resp.json()) as Record<string, any>;
@@ -76,7 +80,8 @@ export class QiniuCDNClient {
     if (resp.status >= 400) {
       const errMsg = data?.error || resp.statusText;
       throw new QiniuAPIError(
-        `Qiniu API error (HTTP ${resp.status}): ${errMsg}`
+        `Qiniu API error (HTTP ${resp.status}): ${errMsg}`,
+        resp.status
       );
     }
 
@@ -141,12 +146,23 @@ export class QiniuCDNClient {
     const rawDomains = resp.domains || [];
     const domains = await Promise.all(
       rawDomains.map(async (d: any) => {
-        const detail = await this.getDomain(d.name || "");
-        return {
-          name: d.name || "",
-          type: d.type || "normal",
-          certId: (detail.https as any)?.certId || "",
-        };
+        const name = d.name || "";
+        try {
+          const detail = await this.getDomain(name);
+          return {
+            name,
+            type: d.type || "normal",
+            certId: (detail.https as any)?.certId || "",
+          };
+        } catch (err: any) {
+          // A domain still deploying (or temporarily unavailable) must not
+          // abort the whole sync: report it without a cert so matching can
+          // still run for every other domain.
+          console.warn(
+            `Could not read details for Qiniu domain ${name}: ${err.message}`
+          );
+          return { name, type: d.type || "normal", certId: "" };
+        }
       })
     );
     return domains;
@@ -162,6 +178,14 @@ export class QiniuCDNClient {
     const cert = resp.cert || resp;
     if (typeof cert.not_after !== "number") return undefined;
     return new Date(cert.not_after * 1000).toISOString();
+  }
+
+  /** PEM chain of a Qiniu SSL certificate, as uploaded. */
+  async getCertPem(certId: string): Promise<string | undefined> {
+    if (!certId) return undefined;
+    const resp = await this.retryRequest("GET", `/sslcert/${certId}`);
+    const cert = resp.cert || resp;
+    return typeof cert.ca === "string" ? cert.ca : undefined;
   }
 
   async createSSLCert(

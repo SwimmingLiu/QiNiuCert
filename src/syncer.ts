@@ -6,7 +6,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AppConfig } from "./config.js";
-import { buildAllMatches } from "./matcher.js";
+import { buildAllMatches, certCoversDomain, domainMatchesPatterns } from "./matcher.js";
+import { sameLeafCertificate } from "./pem.js";
 import { QiniuCDNClient } from "./qiniu.js";
 import type { CertDetail } from "./tencent.js";
 import { TencentSSLClient } from "./tencent.js";
@@ -37,12 +38,40 @@ export interface ExpiryCheckResult {
   error?: boolean;
 }
 
+export interface VerifyResult {
+  cdnDomain: string;
+  status:
+    | "ok"
+    | "unbound"
+    | "stale-cert"
+    | "expiring"
+    | "unmatched"
+    | "unreachable";
+  certDomain?: string;
+  certId?: string;
+  expiresAt?: string;
+  daysLeft?: number | null;
+  message: string;
+}
+
 /**
- * Local cache to track uploaded cert fingerprints.
- * Stored as JSON: { [certDomain]: { fingerprint, certId } }
+ * Local cache tracking what was uploaded to Qiniu.
+ *
+ * The cache is keyed by certificate domain, so it records the last uploaded
+ * fingerprint plus every Qiniu domain that was bound with that upload:
+ * `{ [certDomain]: { fingerprint, certId, bindings: { [cdnDomain]: certId } } }`.
+ * `bindings` lets the syncer tell "this domain already has the current cert"
+ * from "this domain is new and still needs it", which is what makes a newly
+ * added Qiniu domain sync on the next run without touching the fingerprint.
  */
+export interface CertCacheEntry {
+  fingerprint: string;
+  certId: string;
+  bindings?: Record<string, string>;
+}
+
 export class CertCache {
-  private data: Record<string, { fingerprint: string; certId: string }> = {};
+  private data: Record<string, CertCacheEntry> = {};
   private path: string;
 
   constructor(cachePath: string) {
@@ -73,12 +102,37 @@ export class CertCache {
     return this.data[certDomain]?.certId;
   }
 
-  update(certDomain: string, fingerprint: string, certId: string): void {
-    this.data[certDomain] = { fingerprint, certId };
+  /** Qiniu cert ID last bound to `cdnDomain` by a previous sync, if any. */
+  getBoundCertId(certDomain: string, cdnDomain: string): string | undefined {
+    return this.data[certDomain]?.bindings?.[cdnDomain];
+  }
+
+  /**
+   * True when `cdnDomain` already received the certificate with `fingerprint`.
+   * A cache written before bindings were tracked has no `bindings` map: treat
+   * it as "unknown" so the next run re-binds every domain once and fills it in.
+   */
+  isBound(certDomain: string, cdnDomain: string, fingerprint: string): boolean {
+    const entry = this.data[certDomain];
+    if (!entry || entry.fingerprint !== fingerprint || !entry.bindings) {
+      return false;
+    }
+    return Boolean(entry.bindings[cdnDomain]);
+  }
+
+  recordBinding(certDomain: string, fingerprint: string, cdnDomain: string, certId: string): void {
+    const previous = this.data[certDomain];
+    // A renewed certificate invalidates every binding recorded for the old one.
+    const bindings =
+      previous && previous.fingerprint === fingerprint
+        ? { ...(previous.bindings ?? {}) }
+        : {};
+    bindings[cdnDomain] = certId;
+    this.data[certDomain] = { fingerprint, certId, bindings };
     this.save();
   }
 
-  getAllEntries(): Record<string, { fingerprint: string; certId: string }> {
+  getAllEntries(): Record<string, CertCacheEntry> {
     return { ...this.data };
   }
 }
@@ -90,18 +144,26 @@ export class Syncer {
   private forceHttps: boolean;
   private config: AppConfig;
 
-  constructor(config: AppConfig) {
+  constructor(
+    config: AppConfig,
+    clients?: {
+      tencent?: TencentSSLClient;
+      qiniu?: QiniuCDNClient;
+      cache?: CertCache;
+    }
+  ) {
     this.config = config;
-    this.tencent = new TencentSSLClient(
-      config.tencent.secretId,
-      config.tencent.secretKey,
-      config.tencent.region
-    );
-    this.qiniu = new QiniuCDNClient(
-      config.qiniu.accessKey,
-      config.qiniu.secretKey
-    );
-    this.cache = new CertCache(config.sync.cacheFile);
+    this.tencent =
+      clients?.tencent ??
+      new TencentSSLClient(
+        config.tencent.secretId,
+        config.tencent.secretKey,
+        config.tencent.region
+      );
+    this.qiniu =
+      clients?.qiniu ??
+      new QiniuCDNClient(config.qiniu.accessKey, config.qiniu.secretKey);
+    this.cache = clients?.cache ?? new CertCache(config.sync.cacheFile);
     this.forceHttps = config.sync.forceHttps;
   }
 
@@ -153,7 +215,7 @@ export class Syncer {
       }
     }
 
-    // Step 3: List CDN domains from Qiniu
+    // Step 3: List CDN domains from Qiniu (includes domains added since last run)
     const qiniuDomains = await this.qiniu.listDomains();
     if (qiniuDomains.length === 0) {
       console.log("No CDN domains found in Qiniu");
@@ -219,19 +281,23 @@ export class Syncer {
     // Need to match to Qiniu domains
     const qiniuDomains = await this.qiniu.listDomains();
 
-    for (const [certDomain, { certId }] of Object.entries(entries)) {
+    for (const [certDomain, { certId, fingerprint }] of Object.entries(
+      entries
+    )) {
       // Find matching Qiniu domains
       for (const qd of qiniuDomains) {
-        if (
-          qd.name === certDomain ||
-          (certDomain.startsWith("*.") &&
-            qd.name.endsWith(certDomain.slice(1)))
-        ) {
+        if (domainMatchesPatterns(qd.name, [certDomain])) {
           try {
             await this.qiniu.putHTTPSConf(
               qd.name,
               certId,
               this.forceHttps
+            );
+            this.cache.recordBinding(
+              certDomain,
+              fingerprint,
+              qd.name,
+              certId
             );
             report.results.push({
               certDomain,
@@ -269,14 +335,9 @@ export class Syncer {
     const qiniuDomains = await this.qiniu.listDomains();
     const results: ExpiryCheckResult[] = [];
 
-    for (const [certDomain, { certId: cachedCertId }] of Object.entries(entries)) {
+    for (const [certDomain, entry] of Object.entries(entries)) {
       for (const qd of qiniuDomains) {
-        if (
-          qd.name !== certDomain &&
-          !(certDomain.startsWith("*.") && qd.name.endsWith(certDomain.slice(1)))
-        ) {
-          continue;
-        }
+        if (!domainMatchesPatterns(qd.name, [certDomain])) continue;
 
         const certId = qd.certId || "";
         const expiresAt = await this.qiniu.getCertNotAfter(certId);
@@ -292,10 +353,11 @@ export class Syncer {
           daysLeft,
         };
 
+        const expectedCertId = entry.bindings?.[qd.name] ?? entry.certId;
         if (!certId) {
           console.error(`Qiniu domain ${qd.name} has no certificate bound`);
           result.error = true;
-        } else if (cachedCertId !== certId) {
+        } else if (expectedCertId !== certId) {
           console.error(
             `Qiniu domain ${qd.name} is bound to a different certificate than the sync cache`
           );
@@ -318,7 +380,180 @@ export class Syncer {
     if (results.length === 0 && Object.keys(entries).length > 0) {
       throw new Error("No Qiniu domains match the cached certificates");
     }
+
+    // A Qiniu domain that no cached certificate covers is never bound by
+    // `sync`, so the expiry check is the only place that can surface it.
+    const covered = new Set(results.map((r) => r.cdnDomain));
+    for (const qd of qiniuDomains) {
+      if (qd.type === "test" || covered.has(qd.name)) continue;
+      if (!qd.certId) {
+        console.warn(
+          `Qiniu domain ${qd.name} has no certificate bound and no cached cert matches it; add a matching cert in Tencent Cloud`
+        );
+      }
+    }
+
     return results;
+  }
+
+  /**
+   * End-to-end verification, independent of the cache file.
+   *
+   * For every production Qiniu CDN domain it checks that a Tencent
+   * certificate covers it, that the domain has a certificate bound in Qiniu,
+   * that the bound certificate's validity reaches `minDaysLeft`, and that the
+   * domain is reachable over HTTPS. Used by CI after `sync` so a newly added
+   * domain that failed to bind fails the job instead of being discovered
+   * later from a browser warning.
+   */
+  async verify(
+    minDaysLeft = 7,
+    opts: { checkReachability?: boolean } = {}
+  ): Promise<VerifyResult[]> {
+    const certs = await this.tencent.listCertificates([1]);
+    const details: CertDetail[] = [];
+    const seen = new Set<string>();
+    for (const cert of certs) {
+      if (seen.has(cert.domain)) continue;
+      seen.add(cert.domain);
+      try {
+        details.push(
+          await this.tencent.getCertificateDetail(cert.certificateId)
+        );
+      } catch (err: any) {
+        console.error(
+          `Verification: could not read cert ${cert.certificateId} (${cert.domain}): ${err.message}`
+        );
+      }
+    }
+
+    const qiniuDomains = await this.qiniu.listDomains();
+    const results: VerifyResult[] = [];
+
+    for (const qd of qiniuDomains) {
+      if (qd.type === "test") continue;
+
+      // Prefer the certificate whose own domain is an exact match (that is
+      // what `buildAllMatches` binds), then the one valid the longest.
+      const cover = details
+        .filter((d) =>
+          certCoversDomain(
+            d.domain,
+            d.isWildcard,
+            d.subjectAltNames,
+            qd.name
+          )
+        )
+        .sort((a, b) => {
+          const aExact = a.domain === qd.name ? 0 : 1;
+          const bExact = b.domain === qd.name ? 0 : 1;
+          if (aExact !== bExact) return aExact - bExact;
+          return (b.certEndTime || "").localeCompare(a.certEndTime || "");
+        })[0];
+
+      if (!cover) {
+        results.push({
+          cdnDomain: qd.name,
+          status: "unmatched",
+          certId: qd.certId,
+          message: `No Tencent Cloud certificate covers ${qd.name}; add one in Tencent Cloud`,
+        });
+        continue;
+      }
+
+      if (!qd.certId) {
+        results.push({
+          cdnDomain: qd.name,
+          certDomain: cover.domain,
+          status: "unbound",
+          message: `${qd.name} has no certificate bound in Qiniu`,
+        });
+        continue;
+      }
+
+      const expiresAt = await this.qiniu.getCertNotAfter(qd.certId);
+      const timestamp = expiresAt ? Date.parse(expiresAt) : NaN;
+      const daysLeft = Number.isNaN(timestamp)
+        ? null
+        : Math.floor((timestamp - Date.now()) / 86_400_000);
+
+      if (daysLeft === null) {
+        results.push({
+          cdnDomain: qd.name,
+          certDomain: cover.domain,
+          status: "stale-cert",
+          certId: qd.certId,
+          message: `Cannot read the expiry of the certificate bound to ${qd.name}`,
+        });
+        continue;
+      }
+
+      // Compare certificate contents, not just expiry: a renewed certificate
+      // can have the same remaining lifetime while being a different cert.
+      const boundPem = await this.qiniu.getCertPem(qd.certId);
+      if (!sameLeafCertificate(boundPem, cover.publicKey)) {
+        results.push({
+          cdnDomain: qd.name,
+          certDomain: cover.domain,
+          status: "stale-cert",
+          certId: qd.certId,
+          expiresAt,
+          daysLeft,
+          message: `${qd.name} is not bound to the current Tencent Cloud certificate for ${cover.domain}`,
+        });
+        continue;
+      }
+
+      if (daysLeft <= minDaysLeft) {
+        results.push({
+          cdnDomain: qd.name,
+          certDomain: cover.domain,
+          status: "expiring",
+          certId: qd.certId,
+          expiresAt: expiresAt!,
+          daysLeft,
+          message: `Certificate on ${qd.name} expires in ${daysLeft} days`,
+        });
+        continue;
+      }
+
+      results.push({
+        cdnDomain: qd.name,
+        certDomain: cover.domain,
+        status: "ok",
+        certId: qd.certId,
+        expiresAt: expiresAt!,
+        daysLeft,
+        message: `Bound to ${cover.domain}, ${daysLeft} days left`,
+      });
+    }
+
+    if (opts.checkReachability) {
+      for (const result of results) {
+        if (!(await this.isHttpsReachable(result.cdnDomain))) {
+          result.status = "unreachable";
+          result.message = `${result.message}; ${result.cdnDomain} did not complete a verified HTTPS handshake`;
+        }
+      }
+    }
+
+    return results;
+  }
+
+  private async isHttpsReachable(domain: string): Promise<boolean> {
+    try {
+      const resp = await fetch(`https://${domain}/`, {
+        method: "GET",
+        redirect: "manual",
+        signal: AbortSignal.timeout(15_000),
+      });
+      // Any HTTP answer means TLS negotiated successfully; fetch rejects on
+      // certificate errors, connection failures, and timeouts.
+      return resp.status > 0;
+    } catch (err: any) {
+      console.error(`HTTPS check failed for ${domain}: ${err.message}`);
+      return false;
+    }
   }
 
   private async syncOne(
@@ -329,26 +564,34 @@ export class Syncer {
   ): Promise<SyncResult> {
     const certDomain = certInfo.domain;
 
-    // Check fingerprint cache
+    // Per-domain cache: a new Qiniu domain has no binding yet, so it is synced
+    // even when the certificate fingerprint itself is unchanged.
     if (
       !force &&
-      !this.cache.isChanged(certDomain, certInfo.fingerprint)
+      this.cache.isBound(certDomain, cdnDomain, certInfo.fingerprint)
     ) {
-      const cachedCertId = this.cache.getCertId(certDomain) || "";
+      const cachedCertId =
+        this.cache.getBoundCertId(certDomain, cdnDomain) || "";
       console.log(
-        `Certificate ${certDomain} unchanged, skipping ${cdnDomain}`
+        `Certificate ${certDomain} unchanged and already bound, skipping ${cdnDomain}`
       );
       return {
         certDomain,
         cdnDomain,
         action: "skipped",
         certId: cachedCertId,
-        message: "Certificate unchanged",
+        message: "Certificate unchanged and already bound",
       };
     }
 
-    // Check private key
-    if (!certInfo.privateKey) {
+    // Check private key (only needed when the cert still has to be uploaded
+    // to Qiniu; re-binding a cached cert ID works without it).
+    const cachedCertId = this.cache.getCertId(certDomain);
+    const canReuse =
+      cachedCertId &&
+      !this.cache.isChanged(certDomain, certInfo.fingerprint);
+
+    if (!certInfo.privateKey && !canReuse) {
       return {
         certDomain,
         cdnDomain,
@@ -372,17 +615,32 @@ export class Syncer {
       };
     }
 
-    // Upload + bind
+    // Upload + bind. Reuse the Qiniu cert uploaded for this fingerprint when
+    // one exists, so adding a domain does not create a duplicate certificate.
     try {
       const certName = `synced-${certDomain}`;
-      console.log(`Uploading cert ${certDomain} → ${cdnDomain}...`);
+      let qiniuCertId = "";
 
-      const qiniuCertId = await this.qiniu.createSSLCert(
-        certName,
-        certDomain,
-        certInfo.privateKey,
-        certInfo.publicKey
-      );
+      if (
+        !this.cache.isChanged(certDomain, certInfo.fingerprint)
+      ) {
+        qiniuCertId = this.cache.getCertId(certDomain) ?? "";
+        if (qiniuCertId) {
+          console.log(
+            `Reusing Qiniu cert ${qiniuCertId} for ${certDomain} → ${cdnDomain}...`
+          );
+        }
+      }
+
+      if (!qiniuCertId) {
+        console.log(`Uploading cert ${certDomain} → ${cdnDomain}...`);
+        qiniuCertId = await this.qiniu.createSSLCert(
+          certName,
+          certDomain,
+          certInfo.privateKey,
+          certInfo.publicKey
+        );
+      }
 
       await this.qiniu.putHTTPSConf(
         cdnDomain,
@@ -390,7 +648,12 @@ export class Syncer {
         this.forceHttps
       );
 
-      this.cache.update(certDomain, certInfo.fingerprint, qiniuCertId);
+      this.cache.recordBinding(
+        certDomain,
+        certInfo.fingerprint,
+        cdnDomain,
+        qiniuCertId
+      );
 
       console.log(`  ✓ ${certDomain} → ${cdnDomain} (certID: ${qiniuCertId})`);
       return {

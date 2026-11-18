@@ -28,6 +28,7 @@
     "build": "tsup",
     "start": "node dist/cli.js",
     "check": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
