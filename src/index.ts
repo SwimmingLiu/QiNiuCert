@@ -15,11 +15,18 @@ export type {
 export { TencentSSLClient, type CertSummary, type CertDetail } from "./tencent.js";
 export { QiniuCDNClient, QiniuAPIError, type QiniuDomain } from "./qiniu.js";
 export {
-  matchCertToDomains,
-  buildAllMatches,
+  buildBindingPlan,
   certCoversDomain,
   domainMatchesPatterns,
+  excludedDomains,
+  matchCertToDomains,
+  matchRank,
+  normalizeHost,
+  selectCertForDomain,
+  type BindingPlan,
+  type CertCandidate,
 } from "./matcher.js";
+export { leafCertificateBody, leafSha1, sameLeafCertificate } from "./pem.js";
 export {
   Syncer,
   CertCache,
